@@ -315,8 +315,6 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
     return sorted(population, key=lambda ind: fitness(ind, parameters))[0]
 
 
-
-
 def main():
     data = np.load("../data/problem_0.npz")
 
@@ -333,7 +331,10 @@ def main():
         crippling_mutation=True
     )
 
-    print(train_model(training_params))
+    solution = train_model(training_params)
+
+    print(solution, DagGP.mse(solution, x, y))
+    solution.draw()
 
 
 
