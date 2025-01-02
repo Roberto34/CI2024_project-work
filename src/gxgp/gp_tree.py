@@ -4,11 +4,7 @@
 #    / \
 #  10   11   Distributed under MIT License
 
-import random
 from typing import Collection
-
-from .node import Node
-from .utils import arity
 
 __all__ = ['TreeGP']
 

@@ -19,7 +19,6 @@ class TrainingParameters:
     population_size: int
 
     # Fitness parameters
-    tree_depth_penalization: bool
     mse_tolerance: float
 
     # Crossover parameters
@@ -27,7 +26,6 @@ class TrainingParameters:
     elitist_population: bool
 
     # Mutation parameters
-    crippling_mutation: bool
     crippling_chance: float
 
     def __init__(self,
@@ -37,14 +35,12 @@ class TrainingParameters:
             num_generations: int,
             population_size: int,
 
-            tree_depth_penalization: bool = False,
-            mse_tolerance: float = 0.5,
+            mse_tolerance: float = 0.0,
 
             weighted_parent_selection: bool = False,
             elitist_population: bool = False,
 
-            crippling_mutation: bool = False,
-            crippling_chance: float = 0.25,
+            crippling_chance: float = 0.0,
     ):
         self.x = x
         self.y = y
@@ -52,13 +48,11 @@ class TrainingParameters:
         self.num_generations = num_generations
         self.population_size = population_size
 
-        self.tree_depth_penalization = tree_depth_penalization
         self.mse_tolerance = mse_tolerance
 
         self.weighted_parent_selection = weighted_parent_selection
         self.elitist_population = elitist_population
 
-        self.crippling_mutation = crippling_mutation
         self.crippling_chance = crippling_chance
 
 class Fitness:
@@ -73,16 +67,7 @@ class Fitness:
         self_mse: float = DagGP.mse(self.individual, self.parameters.x, self.parameters.y)
         other_mse: float = DagGP.mse(other.individual, other.parameters.x, other.parameters.y)
 
-        if all([re.search("^x\\d+$", sub_node.short_name) is None for sub_node in self.individual.subtree]):
-            return False
-
-        if not self.parameters.tree_depth_penalization == other.parameters.tree_depth_penalization:
-            return self_mse < other_mse
-
-        if not self.parameters.tree_depth_penalization:
-            return self_mse < other_mse
-
-        if not self.parameters.mse_tolerance == other.parameters.mse_tolerance:
+        if self.parameters.mse_tolerance != other.parameters.mse_tolerance:
             return self_mse < other_mse
 
         if abs(self_mse - other_mse) > self.parameters.mse_tolerance:
@@ -95,70 +80,178 @@ class Fitness:
         return DagGP.mse(self.individual, self.parameters.x, self.parameters.y)
 
 
+def is_valid(individual: Node) -> bool:
+    if any([(sub_node.short_name == "divide" and sub_node.successors[1].long_name == "0") for sub_node in individual.subtree]):
+        return False
+
+    if any([(sub_node.short_name == "power" and sub_node.successors[0].long_name == "-1") for sub_node in individual.subtree]):
+        return False
+
+    if any([(sub_node.short_name in ["arcsin", "arccos", "arctan"] and sub_node.successors[0].long_name in ["2", "5", f"{np.pi:g}", f"{np.e:g}"]) for sub_node in individual.subtree]):
+        return False
+
+    return any([re.search("^x\\d+$", sub_node.short_name) is not None for sub_node in individual.subtree])
+
+
 def cleanup(individual: Node) -> Node:
     if any([(not node.is_leaf and not is_cleaned_up(node)) for node in individual.successors]):
         individual.successors = [cleanup(successor) for successor in individual.successors]
 
         return cleanup(individual)
 
-    if individual.short_name == "add":
-        non_zero_nodes: list[Node] = list(filter(lambda node: node.long_name != "0", individual.successors))
+    param1: Node | None = None
+    param2: Node | None = None
 
-        if len(non_zero_nodes) == 0:
-            return Node(0)
-        if len(non_zero_nodes) == 1:
-            return non_zero_nodes[0]
+    if len(individual.successors) > 0:
+        param1 = individual.successors[0]
+    if len(individual.successors) > 1:
+        param2 = individual.successors[1]
+
+    if individual.short_name == "add":
+        if param1.long_name.isnumeric() and param2.long_name.isnumeric():
+            return Node(param1.value + param2.value)
+
+        if param1.is_constant and param1.value == 0:
+            return param2
+        if param2.is_constant and param2.value == 0:
+            return param1
 
     if individual.short_name == "subtract":
-        if individual.successors[1].long_name == "0":
-            return individual.successors[0]
+        if param1.long_name.isnumeric() and param2.long_name.isnumeric():
+            return Node(param1.value - param2.value)
 
-        if individual.successors[0].long_name == individual.successors[1].long_name:
+        if param2.is_constant and param2.value == 0:
+            return param1
+
+        if param1.long_name == param2.long_name:
             return Node(0)
 
     if individual.short_name == "multiply":
-        non_zero_nodes: list[Node] = list(filter(lambda node: node.long_name != "0", individual.successors))
-        non_one_nodes: list[Node] = list(filter(lambda node: node.long_name != "1", individual.successors))
+        if param1.long_name.isnumeric() and param2.long_name.isnumeric():
+            return Node(param1.value * param2.value)
 
-        if len(non_zero_nodes) != 2:
+        if (param1.is_constant and param1.value == 0) or (param2.is_constant and param2.value == 0):
             return Node(0)
 
-        if len(non_one_nodes) == 0:
-            return Node(1)
-        if len(non_one_nodes) == 1:
-            return non_one_nodes[0]
+        if param1.is_constant and param1.value == 1:
+            return param2
+        if param2.is_constant and param2.value == 1:
+            return param1
 
     if individual.short_name == "divide":
-        if individual.successors[0].long_name == "0":
+        if param1.long_name.isnumeric() and param2.long_name.isnumeric() and param2.value != 0:
+            return Node(param1.value / param2.value)
+
+        if param1.is_constant and param1.value == 0 and not (param2.is_constant and param2.value == 0):
             return Node(0)
 
-        if individual.successors[1].long_name == "1":
-            return individual.successors[0]
+        if param2.is_constant and param2.value == 1:
+            return param1
+
+    if individual.short_name == "power":
+        if param1.long_name.isnumeric() and param2.long_name.isnumeric() and param2.value != 0:
+            return Node(param1.value ** param2.value)
+
+        if (param1.is_constant and param1.value == 0) and not (param2.is_constant and param2.value == 0):
+            return Node(0)
+
+        if (param1.is_constant and param1.value == 1) or ((param2.is_constant and param2.value == 0) and not (param1.is_constant and param1.value == 0)):
+            return Node(1)
+
+        if param2.is_constant and param2.value == 1:
+            return param1
+
+    if individual.short_name == "sin":
+        if param1.is_constant and param1.value == 0:
+            return Node(0)
+
+        if param1.is_constant and param1.value == np.pi:
+            return Node(1)
+
+    if individual.short_name == "cos":
+        if param1.is_constant and param1.value == 0:
+            return Node(1)
+
+        if param1.is_constant and param1.value == np.pi:
+            return Node(0)
+
+    if individual.short_name == "tan" and ((param1.is_constant and param1.value == 0) or (param1.is_constant and param1.value == np.pi)):
+        return Node(0)
+
+    if individual.short_name == "exp" and param1.is_constant and param1.value == 0:
+        return Node(1)
+
+    if individual.short_name == "log":
+        if param1.is_constant and param1.value == 1:
+            return Node(0)
+
+        if param1.is_constant and param1.value == np.e:
+            return Node(1)
 
     return individual
 
 def is_cleaned_up(individual: Node) -> bool:
     for sub_node in individual.subtree:
-        if sub_node.short_name == "add":
-            non_zero_nodes: list[Node] = list(filter(lambda node: node.long_name != "0", sub_node.successors))
+        param1: Node | None = None
+        param2: Node | None = None
 
-            if len(non_zero_nodes) != 2:
-                return False
+        if len(sub_node.successors) > 0:
+            param1 = sub_node.successors[0]
+        if len(sub_node.successors) > 1:
+            param2 = sub_node.successors[1]
 
-        if sub_node.short_name == "subtract":
-            if sub_node.successors[1].long_name == "0" or sub_node.successors[0].long_name == sub_node.successors[1].long_name:
-                return False
+        if sub_node.short_name == "add" and (
+            (param1.long_name.isnumeric() and param2.long_name.isnumeric()) or
+            (param1.is_constant and param1.value == 0) or
+            (param2.is_constant and param2.value == 0)
+        ):
+            return False
 
-        if individual.short_name == "multiply":
-            non_zero_nodes: list[Node] = list(filter(lambda node: node.long_name != "0", individual.successors))
-            non_one_nodes: list[Node] = list(filter(lambda node: node.long_name != "1", individual.successors))
+        if sub_node.short_name == "subtract" and (
+            (param1.long_name.isnumeric() and param2.long_name.isnumeric()) or
+            (param2.is_constant and param2.value == 0) or
+            (param1.long_name == param2.long_name)
+        ):
+            return False
 
-            if len(non_zero_nodes) != 2 or len(non_one_nodes) != 2:
-                return False
+        if sub_node.short_name == "multiply" and (
+            (param1.long_name.isnumeric() and param2.long_name.isnumeric()) or
+            (param1.is_constant and param1.value == 0) or
+            (param2.is_constant and param2.value == 0) or
+            (param1.is_constant and param1.value == 1) or
+            (param2.is_constant and param2.value == 1)
+        ):
+            return False
 
-        if individual.short_name == "divide":
-            if individual.successors[0].long_name == "0" or individual.successors[1].long_name == "1":
-                return False
+        if sub_node.short_name == "divide" and (
+            (param1.long_name.isnumeric() and param2.long_name.isnumeric() and param2.value != 0) or
+            (param1.is_constant and param1.value == 0 and not (param2.is_constant and param2.value == 0)) or
+            (param2.is_constant and param2.value == 1)
+        ):
+            return False
+
+        if sub_node.short_name == "power" and (
+            (param1.long_name.isnumeric() and param2.long_name.isnumeric() and param2.value != 0) or
+            ((param1.is_constant and param1.value == 0) and not (param2.is_constant and param2.value == 0)) or
+            ((param1.is_constant and param1.value == 1) or ((param2.is_constant and param2.value == 0) and not (param1.is_constant and param1.value == 0))) or
+            (param2.is_constant and param2.value == 1)
+        ):
+            return False
+
+        if any([sub_node.short_name == "cos", sub_node.short_name == "sin", sub_node.short_name == "tan"]) and (
+            (param1.is_constant and param1.value == 0) or
+            (param1.is_constant and param1.value == np.pi)
+        ):
+            return False
+
+        if sub_node.short_name == "exp" and param1.is_constant and param1.value == 0:
+            return False
+
+        if sub_node.short_name == "log" and (
+            (param1.is_constant and param1.value == 1) or
+            (param1.is_constant and param1.value == np.e)
+        ):
+            return False
 
     return True
 
@@ -218,7 +311,7 @@ def mutate(individual: Node, dag: DagGP, parameters: TrainingParameters) -> Node
 
         index: int = gxgp_random.integers(len(successors))
 
-        if successors[index].is_leaf or (parameters.crippling_mutation and gxgp_random.random() < parameters.crippling_chance):
+        if successors[index].is_leaf or gxgp_random.random() < parameters.crippling_chance:
             successors[index] = gxgp_random.choice(dag.params_pool)
         else:
             same_arity_operators: list[np.ufunc] = list(filter(lambda op: arity(op) == successors[index].arity, dag.operators))
@@ -244,14 +337,24 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
         [
             np.add, np.subtract,
             np.multiply, np.divide,
-            np.sin, np.cos,
+            np.pow,
+            np.sin, np.cos, np.tan,
             np.exp, np.log
         ],
         parameters.x.shape[0],
-        [-1, 0, 1, 2, 5, np.pi, np.e])
+        [-1, 0, 1, 2, 5, np.pi, np.e]
+    )
 
     # Create an initial population of size N
-    population: list[Node] = [cleanup(dag.create_individual()) for _ in range(parameters.population_size)]
+    population: list[Node] = []
+    for _ in range(parameters.population_size * 10):
+        new_individual: Node = cleanup(dag.create_individual())
+
+        if is_valid(new_individual):
+            population.append(new_individual)
+
+        if len(population) == parameters.population_size:
+            break
 
     # If any of the initial solutions already has an MSE value of 0.0 (extremely unlikely, but possible), returns
     # that solution and skips the training completely.
@@ -259,12 +362,20 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
     if final_solution is not None:
         return final_solution
 
+    if verbose:
+        for n in population:
+            print(n)
+
+        print(all([is_valid(i) for i in population]))
+        print()
+
     for i in tqdm(range(parameters.num_generations)):
         # Sort the population by fitness
         sorted_population: list[Node] = sorted(population, key=lambda ind: fitness(ind, parameters))
 
         if verbose:
             print(f"Generation {i}: completed sorting")
+            print()
 
         # Restrict the pool of available parents to the best N / 2 individuals
         parents_pool = sorted_population[:parameters.population_size // 2]
@@ -272,27 +383,46 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
         if verbose:
             print(f"Generation {i}: generated parents pool")
 
+            for par in parents_pool:
+                print(par)
+
+            print(all([is_valid(p) for p in parents_pool]))
+            print()
+
         # Create a new generation
         population = []
-        # Fill half the population of this generation with children generated by crossover
-        for _ in range(parameters.population_size // 2):
-            parents: tuple[Node, Node] = select_parents(parents_pool, parameters)
-            population.append(crossover(parents))
-
-        if verbose:
-            print(f"Generation {i}: completed crossover")
-
-        # For the other half, if an elitist strategy is being applied, pick the best individuals from the previous generation
         if parameters.elitist_population:
-            population.extend(sorted_population[:parameters.population_size // 2])
-        # otherwise, generate children like before
-        else:
-            for _ in range(parameters.population_size // 2):
+            population.extend(sorted_population[:parameters.elitist_population // 10])
+
+            for _ in range(parameters.population_size * 10):
                 parents: tuple[Node, Node] = select_parents(parents_pool, parameters)
-                population.append(crossover(parents))
+                offspring: Node = cleanup(crossover(parents))
+
+                if is_valid(offspring):
+                    population.append(offspring)
+
+                if len(population) == parameters.population_size:
+                    break
+        else:
+            # Fill the population of this generation with children generated by crossover
+            for _ in range(parameters.population_size * 10):
+                parents: tuple[Node, Node] = select_parents(parents_pool, parameters)
+                offspring: Node = cleanup(crossover(parents))
+
+                if is_valid(offspring):
+                    population.append(offspring)
+
+                if len(population) == parameters.population_size:
+                    break
 
         if verbose:
             print(f"Generation {i}: created new generation")
+
+            for n in population:
+                print(n)
+
+            print(all([is_valid(i) for i in population]))
+            print()
 
         # Check for the (extremely unlikely) case where a solution has MSE of 0.0.
         # If it does, stop the computations and return that solution.
@@ -300,17 +430,27 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
         if final_solution is not None:
             return final_solution
 
-        population = [mutate(individual, dag, parameters) for individual in population]
+        # Apply mutations to the individuals
+        for index, individual in enumerate(population):
+            for _ in range(10):
+                mutated_individual: Node = cleanup(mutate(individual, dag, parameters))
+
+                if is_valid(mutated_individual):
+                    population[index] = mutated_individual
+
+        if verbose:
+            print(f"Generation {i}: mutated new generation")
+
+            for n in population:
+                print(n)
+
+            print(all([is_valid(i) for i in population]))
+            print()
 
         # Check again for the stopping case.
         final_solution: Node | None = check_population(population, parameters)
         if final_solution is not None:
             return final_solution
-
-        # Clean up the population (i.e. simplify the expression when possible)
-        population = [cleanup(individual) for individual in population]
-        if verbose:
-            print(f"Generation {i}: completed cleanup")
 
     return sorted(population, key=lambda ind: fitness(ind, parameters))[0]
 
@@ -321,28 +461,13 @@ def main():
     x: np.ndarray = data['x']
     y: np.ndarray = data['y']
 
-    training_params: TrainingParameters = TrainingParameters(
+    solution: Node = train_model(TrainingParameters(
         x, y,
-        10,
-        20,
-        tree_depth_penalization=True,
-        #weighted_parent_selection=True,
-        #elitist_population=True,
-        crippling_mutation=True
-    )
-
-    solution = train_model(training_params)
+        1000,
+        20
+    ))
 
     print(solution, DagGP.mse(solution, x, y))
-    solution.draw()
-
-
-
-
-
-
-
-
 
 
 if __name__ == '__main__':

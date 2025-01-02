@@ -20,7 +20,7 @@ class Node:
     _arity: int
     _str: str
 
-    def __init__(self, node: Callable | Number | str | None = None, successors: list['Node'] | None = None, *, name: str = None):
+    def __init__(self, node: Callable | Number | str, successors: list['Node'] | None = None, *, name: str | None = None):
         if callable(node):
             def _f(*_args, **_kwargs):
                 return node(*_args)
@@ -83,6 +83,18 @@ class Node:
     @property
     def is_leaf(self):
         return not self._successors
+
+    @property
+    def is_operator(self):
+        return self._arity > 0
+
+    @property
+    def is_constant(self):
+        return self.arity == 0 and self._str.replace('.', '', 1).isnumeric()
+
+    @property
+    def is_variable(self):
+        return self.arity == 0 and not self.is_constant
 
     @property
     def short_name(self):
