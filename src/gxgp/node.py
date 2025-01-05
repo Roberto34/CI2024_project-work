@@ -90,11 +90,11 @@ class Node:
 
     @property
     def is_constant(self):
-        return self.arity == 0 and self._str.replace('.', '', 1).isnumeric()
+        return self.arity == 0 and self._str.replace(".", "", 1).strip("-").isnumeric()
 
     @property
     def is_variable(self):
-        return self.arity == 0 and not self.is_constant
+        return self.arity == 0 and not self.is_constant and self._str != "inf" and self._str != "nan"
 
     @property
     def short_name(self):

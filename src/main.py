@@ -1,12 +1,10 @@
-import copy
-import re
 from copy import deepcopy
 
 import numpy as np
 
 from tqdm import tqdm
 from gxgp import Node, DagGP, gxgp_random
-from src.gxgp import xover_swap_subtree, arity
+from src.gxgp import arity
 
 
 class TrainingParameters:
@@ -80,17 +78,18 @@ class Fitness:
         return DagGP.mse(self.individual, self.parameters.x, self.parameters.y)
 
 
-def is_valid(individual: Node) -> bool:
-    if any([(sub_node.short_name == "divide" and sub_node.successors[1].long_name == "0") for sub_node in individual.subtree]):
+def is_valid(individual: Node, parameters: TrainingParameters) -> bool:
+    try:
+        return (
+            any(sub_node.is_variable for sub_node in individual.subtree) and
+            not np.any(np.isnan(DagGP.evaluate(individual, parameters.x))) and
+            not np.any(np.isinf(DagGP.evaluate(individual, parameters.x)))
+        ) and (
+            parameters.crippling_chance > 0 or
+            len(individual.subtree) <= 5
+        )
+    except BaseException:
         return False
-
-    if any([(sub_node.short_name == "power" and sub_node.successors[0].long_name == "-1") for sub_node in individual.subtree]):
-        return False
-
-    if any([(sub_node.short_name in ["arcsin", "arccos", "arctan"] and sub_node.successors[0].long_name in ["2", "5", f"{np.pi:g}", f"{np.e:g}"]) for sub_node in individual.subtree]):
-        return False
-
-    return any([re.search("^x\\d+$", sub_node.short_name) is not None for sub_node in individual.subtree])
 
 
 def cleanup(individual: Node) -> Node:
@@ -108,7 +107,7 @@ def cleanup(individual: Node) -> Node:
         param2 = individual.successors[1]
 
     if individual.short_name == "add":
-        if param1.long_name.isnumeric() and param2.long_name.isnumeric():
+        if param1.long_name.strip("-").isnumeric() and param2.long_name.strip("-").isnumeric():
             return Node(param1.value + param2.value)
 
         if param1.is_constant and param1.value == 0:
@@ -117,7 +116,7 @@ def cleanup(individual: Node) -> Node:
             return param1
 
     if individual.short_name == "subtract":
-        if param1.long_name.isnumeric() and param2.long_name.isnumeric():
+        if param1.long_name.strip("-").isnumeric() and param2.long_name.strip("-").isnumeric():
             return Node(param1.value - param2.value)
 
         if param2.is_constant and param2.value == 0:
@@ -127,7 +126,7 @@ def cleanup(individual: Node) -> Node:
             return Node(0)
 
     if individual.short_name == "multiply":
-        if param1.long_name.isnumeric() and param2.long_name.isnumeric():
+        if param1.long_name.strip("-").isnumeric() and param2.long_name.strip("-").isnumeric():
             return Node(param1.value * param2.value)
 
         if (param1.is_constant and param1.value == 0) or (param2.is_constant and param2.value == 0):
@@ -139,7 +138,7 @@ def cleanup(individual: Node) -> Node:
             return param1
 
     if individual.short_name == "divide":
-        if param1.long_name.isnumeric() and param2.long_name.isnumeric() and param2.value != 0:
+        if param1.long_name.strip("-").isnumeric() and param2.long_name.strip("-").isnumeric() and param2.value != 0:
             return Node(param1.value / param2.value)
 
         if param1.is_constant and param1.value == 0 and not (param2.is_constant and param2.value == 0):
@@ -148,14 +147,20 @@ def cleanup(individual: Node) -> Node:
         if param2.is_constant and param2.value == 1:
             return param1
 
+        if param1.long_name == param2.long_name:
+            return Node(1)
+
     if individual.short_name == "power":
-        if param1.long_name.isnumeric() and param2.long_name.isnumeric() and param2.value != 0:
+        if (
+            (param1.long_name.strip("-").isnumeric() and param2.long_name.strip("-").isnumeric()) and not
+            (param1.is_constant and param1.value == 0 and param2.is_constant and param2.value < 0)
+        ):
             return Node(param1.value ** param2.value)
 
-        if (param1.is_constant and param1.value == 0) and not (param2.is_constant and param2.value == 0):
+        if param1.is_constant and param1.value == 0:
             return Node(0)
 
-        if (param1.is_constant and param1.value == 1) or ((param2.is_constant and param2.value == 0) and not (param1.is_constant and param1.value == 0)):
+        if (param1.is_constant and param1.value == 1) or (param2.is_constant and param2.value == 0):
             return Node(1)
 
         if param2.is_constant and param2.value == 1:
@@ -175,7 +180,10 @@ def cleanup(individual: Node) -> Node:
         if param1.is_constant and param1.value == np.pi:
             return Node(0)
 
-    if individual.short_name == "tan" and ((param1.is_constant and param1.value == 0) or (param1.is_constant and param1.value == np.pi)):
+    if individual.short_name == "tan" and (
+        (param1.is_constant and param1.value == 0) or
+        (param1.is_constant and param1.value == np.pi)
+    ):
         return Node(0)
 
     if individual.short_name == "exp" and param1.is_constant and param1.value == 0:
@@ -201,21 +209,21 @@ def is_cleaned_up(individual: Node) -> bool:
             param2 = sub_node.successors[1]
 
         if sub_node.short_name == "add" and (
-            (param1.long_name.isnumeric() and param2.long_name.isnumeric()) or
+            (param1.long_name.strip("-").isnumeric() and param2.long_name.strip("-").isnumeric()) or
             (param1.is_constant and param1.value == 0) or
             (param2.is_constant and param2.value == 0)
         ):
             return False
 
         if sub_node.short_name == "subtract" and (
-            (param1.long_name.isnumeric() and param2.long_name.isnumeric()) or
+            (param1.long_name.strip("-").isnumeric() and param2.long_name.strip("-").isnumeric()) or
             (param2.is_constant and param2.value == 0) or
             (param1.long_name == param2.long_name)
         ):
             return False
 
-        if sub_node.short_name == "multiply" and (
-            (param1.long_name.isnumeric() and param2.long_name.isnumeric()) or
+        if sub_node.short_name in ["multiply", "power"] and (
+            (param1.long_name.strip("-").isnumeric() and param2.long_name.strip("-").isnumeric()) or
             (param1.is_constant and param1.value == 0) or
             (param2.is_constant and param2.value == 0) or
             (param1.is_constant and param1.value == 1) or
@@ -224,17 +232,10 @@ def is_cleaned_up(individual: Node) -> bool:
             return False
 
         if sub_node.short_name == "divide" and (
-            (param1.long_name.isnumeric() and param2.long_name.isnumeric() and param2.value != 0) or
+            (param1.long_name.strip("-").isnumeric() and param2.long_name.strip("-").isnumeric() and param2.value != 0) or
             (param1.is_constant and param1.value == 0 and not (param2.is_constant and param2.value == 0)) or
-            (param2.is_constant and param2.value == 1)
-        ):
-            return False
-
-        if sub_node.short_name == "power" and (
-            (param1.long_name.isnumeric() and param2.long_name.isnumeric() and param2.value != 0) or
-            ((param1.is_constant and param1.value == 0) and not (param2.is_constant and param2.value == 0)) or
-            ((param1.is_constant and param1.value == 1) or ((param2.is_constant and param2.value == 0) and not (param1.is_constant and param1.value == 0))) or
-            (param2.is_constant and param2.value == 1)
+            (param2.is_constant and param2.value == 1) or
+            (param1.long_name == param2.long_name)
         ):
             return False
 
@@ -259,7 +260,11 @@ def is_cleaned_up(individual: Node) -> bool:
 def fitness(individual: Node, parameters: TrainingParameters) -> Fitness:
     return Fitness(individual, parameters)
 
-def select_parents(parent_pool: list[Node], parameters: TrainingParameters) -> (Node, Node):
+def select_parents(parent_pool: list[Node], dag: DagGP, parameters: TrainingParameters) -> (Node, Node):
+    match len(parent_pool):
+        case 0:
+            return ()
+
     p: np.ndarray = gxgp_random.uniform(size=len(parent_pool))
 
     if parameters.weighted_parent_selection:
@@ -350,7 +355,7 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
     for _ in range(parameters.population_size * 10):
         new_individual: Node = cleanup(dag.create_individual())
 
-        if is_valid(new_individual):
+        if is_valid(new_individual, parameters):
             population.append(new_individual)
 
         if len(population) == parameters.population_size:
@@ -366,7 +371,7 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
         for n in population:
             print(n)
 
-        print(all([is_valid(i) for i in population]))
+        print(all([is_valid(i, parameters) for i in population]))
         print()
 
     for i in tqdm(range(parameters.num_generations)):
@@ -386,7 +391,7 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
             for par in parents_pool:
                 print(par)
 
-            print(all([is_valid(p) for p in parents_pool]))
+            print(all([is_valid(p, parameters) for p in parents_pool]))
             print()
 
         # Create a new generation
@@ -395,10 +400,10 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
             population.extend(sorted_population[:parameters.elitist_population // 10])
 
             for _ in range(parameters.population_size * 10):
-                parents: tuple[Node, Node] = select_parents(parents_pool, parameters)
+                parents: tuple[Node, Node] = select_parents(parents_pool, dag, parameters)
                 offspring: Node = cleanup(crossover(parents))
 
-                if is_valid(offspring):
+                if is_valid(offspring, parameters):
                     population.append(offspring)
 
                 if len(population) == parameters.population_size:
@@ -406,10 +411,10 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
         else:
             # Fill the population of this generation with children generated by crossover
             for _ in range(parameters.population_size * 10):
-                parents: tuple[Node, Node] = select_parents(parents_pool, parameters)
+                parents: tuple[Node, Node] = select_parents(parents_pool, dag, parameters)
                 offspring: Node = cleanup(crossover(parents))
 
-                if is_valid(offspring):
+                if is_valid(offspring, parameters):
                     population.append(offspring)
 
                 if len(population) == parameters.population_size:
@@ -421,7 +426,7 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
             for n in population:
                 print(n)
 
-            print(all([is_valid(i) for i in population]))
+            print(all([is_valid(i, parameters) for i in population]))
             print()
 
         # Check for the (extremely unlikely) case where a solution has MSE of 0.0.
@@ -435,7 +440,7 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
             for _ in range(10):
                 mutated_individual: Node = cleanup(mutate(individual, dag, parameters))
 
-                if is_valid(mutated_individual):
+                if is_valid(mutated_individual, parameters):
                     population[index] = mutated_individual
 
         if verbose:
@@ -444,7 +449,7 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
             for n in population:
                 print(n)
 
-            print(all([is_valid(i) for i in population]))
+            print(all([is_valid(i, parameters) for i in population]))
             print()
 
         # Check again for the stopping case.
@@ -461,13 +466,73 @@ def main():
     x: np.ndarray = data['x']
     y: np.ndarray = data['y']
 
-    solution: Node = train_model(TrainingParameters(
-        x, y,
-        1000,
-        20
-    ))
+    # Num. generations and pop. size tuning results
 
-    print(solution, DagGP.mse(solution, x, y))
+    #(100, 10, np.float64(3.2031730817384574))
+    #(100, 20, np.float64(1.99364723850543))
+    #(100, 50, np.float64(0.01067566400550203))
+    #(1000, 10, np.float64(3.3948032297143866))
+    #(1000, 20, np.float64(3.2031730817384574))
+    #(1000, 50, np.float64(1.8515305531317954))
+    #(10000, 10, np.float64(3.8019981684757713))
+    #(10000, 20, np.float64(2.1363319744909415))
+    #(10000, 50, np.float64(1.8910558431660756))
+
+    #(100, np.float64(0.01067566400550203))
+    #(1000, np.float64(1.8515305531317954))
+    #(100, np.float64(1.8515305531317954))
+    #(1000, np.float64(0.01067566400550203))
+    #(100, np.float64(3.144850474346221))
+    #(1000, np.float64(1.962694021881409))
+    #(100, np.float64(3.144850474346221))
+    #(1000, np.float64(1.9393335184151785))
+    #(100, np.float64(0.01067566400550203))
+    #(1000, np.float64(2.0724984634723063))
+    #(100, np.float64(1.99364723850543))
+    #(1000, np.float64(1.8515305531317954))
+    #(100, np.float64(1.8515305531317954))
+    #(1000, np.float64(0.01067566400550203))
+    #(100, np.float64(1.8515305531317954))
+    #(1000, np.float64(0.01067566400550203))
+    #(100, np.float64(1.9393335184151785))
+    #(1000, np.float64(0.01067566400550203))
+    #(100, np.float64(1.8515305531317954))
+    #(1000, np.float64(1.8515305531317954))
+
+    # Weighted parent selection tuning results
+
+    #('not weighted', np.float64(1.8515305531317954))
+    #('weighted', np.float64(1.962694021881409))
+    #('not weighted', np.float64(1.9393335184151785))
+    #('weighted', np.float64(1.99364723850543))
+    #('not weighted', np.float64(1.962694021881409))
+    #('weighted', np.float64(1.99364723850543))
+    #('not weighted', np.float64(1.8515305531317954))
+    #('weighted', np.float64(1.8515305531317954))
+    #('not weighted', np.float64(1.8515305531317954))
+    #('weighted', np.float64(2.0724984634723063))
+    #('not weighted', np.float64(1.99364723850543))
+    #('weighted', np.float64(2.847476468494588))
+    #('not weighted', np.float64(1.8515305531317954))
+    #('weighted', np.float64(1.8515305531317954))
+    #('not weighted', np.float64(1.8515305531317954))
+    #('weighted', np.float64(1.8515305531317954))
+    #('not weighted', np.float64(1.9393335184151785))
+    #('weighted', np.float64(1.962694021881409))
+    #('not weighted', np.float64(1.8515305531317954))
+    #('weighted', np.float64(1.8515305531317954))
+
+    results: list[tuple[str, float]] = []
+
+    for i in range(10):
+        solution_not_weighted: Node = train_model(TrainingParameters(x, y, 1000, 50))
+        solution_weighted: Node = train_model(TrainingParameters(x, y, 1000, 50, weighted_parent_selection=True))
+
+        results.append(("not weighted", DagGP.mse(solution_not_weighted, x, y)))
+        results.append(("weighted", DagGP.mse(solution_weighted, x, y)))
+
+    for result in results:
+        print(result)
 
 
 if __name__ == '__main__':
