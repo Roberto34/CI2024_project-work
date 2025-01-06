@@ -16,15 +16,12 @@ class TrainingParameters:
     num_generations: int
     population_size: int
 
-    # Fitness parameters
-    mse_tolerance: float
-
     # Crossover parameters
     weighted_parent_selection: bool
     elitist_population: bool
 
-    # Mutation parameters
-    crippling_chance: float
+    # Chance parameters
+    random_event_chance: float
 
     def __init__(self,
             x: np.ndarray,
@@ -33,12 +30,10 @@ class TrainingParameters:
             num_generations: int,
             population_size: int,
 
-            mse_tolerance: float = 0.0,
-
             weighted_parent_selection: bool = False,
             elitist_population: bool = False,
 
-            crippling_chance: float = 0.0,
+            random_event_chance: float = 0.0,
     ):
         self.x = x
         self.y = y
@@ -46,12 +41,18 @@ class TrainingParameters:
         self.num_generations = num_generations
         self.population_size = population_size
 
-        self.mse_tolerance = mse_tolerance
-
         self.weighted_parent_selection = weighted_parent_selection
         self.elitist_population = elitist_population
 
-        self.crippling_chance = crippling_chance
+        self.random_event_chance = random_event_chance
+
+    def __str__(self):
+        return (f"Num. generations: {self.num_generations} \n"
+                f"Population size: {self.population_size} \n"
+                f"Weighted parent selection: {self.weighted_parent_selection} \n"
+                f"Elitist population: {self.elitist_population} \n"
+                f"Random event chance: {self.random_event_chance}")
+
 
 class Fitness:
     individual: Node
@@ -65,13 +66,11 @@ class Fitness:
         self_mse: float = DagGP.mse(self.individual, self.parameters.x, self.parameters.y)
         other_mse: float = DagGP.mse(other.individual, other.parameters.x, other.parameters.y)
 
-        if self.parameters.mse_tolerance != other.parameters.mse_tolerance:
-            return self_mse < other_mse
+        if gxgp_random.random() < self.parameters.random_event_chance:
+            return len(self.individual.subtree) < len(other.individual.subtree)
 
-        if abs(self_mse - other_mse) > self.parameters.mse_tolerance:
-            return self_mse < other_mse
+        return self_mse < other_mse
 
-        return len(self.individual.subtree) < len(other.individual.subtree)
 
     @property
     def mse(self):
@@ -85,8 +84,8 @@ def is_valid(individual: Node, parameters: TrainingParameters) -> bool:
             not np.any(np.isnan(DagGP.evaluate(individual, parameters.x))) and
             not np.any(np.isinf(DagGP.evaluate(individual, parameters.x)))
         ) and (
-            parameters.crippling_chance > 0 or
-            len(individual.subtree) <= 5
+            parameters.random_event_chance > 0 or
+            len(individual.subtree) <= 10
         )
     except BaseException:
         return False
@@ -316,7 +315,7 @@ def mutate(individual: Node, dag: DagGP, parameters: TrainingParameters) -> Node
 
         index: int = gxgp_random.integers(len(successors))
 
-        if successors[index].is_leaf or gxgp_random.random() < parameters.crippling_chance:
+        if successors[index].is_leaf or gxgp_random.random() < parameters.random_event_chance:
             successors[index] = gxgp_random.choice(dag.params_pool)
         else:
             same_arity_operators: list[np.ufunc] = list(filter(lambda op: arity(op) == successors[index].arity, dag.operators))
@@ -374,7 +373,7 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
         print(all([is_valid(i, parameters) for i in population]))
         print()
 
-    for i in tqdm(range(parameters.num_generations)):
+    for i in range(parameters.num_generations):
         # Sort the population by fitness
         sorted_population: list[Node] = sorted(population, key=lambda ind: fitness(ind, parameters))
 
@@ -461,78 +460,44 @@ def train_model(parameters: TrainingParameters, verbose: bool = False) -> Node:
 
 
 def main():
-    data = np.load("../data/problem_0.npz")
+    # Num. generations and pop. size tuning results (on problem 0)
 
-    x: np.ndarray = data['x']
-    y: np.ndarray = data['y']
+    # (100, 10, np.float64(3.2031730817384574))
+    # (100, 20, np.float64(1.99364723850543))
+    # (100, 50, np.float64(0.01067566400550203))
+    # (1000, 10, np.float64(3.3948032297143866))
+    # (1000, 20, np.float64(3.2031730817384574))
+    # (1000, 50, np.float64(1.8515305531317954))
+    # (10000, 10, np.float64(3.8019981684757713))
+    # (10000, 20, np.float64(2.1363319744909415))
+    # (10000, 50, np.float64(1.8910558431660756))
 
-    # Num. generations and pop. size tuning results
+    solutions: list[(Node, TrainingParameters)] = []
 
-    #(100, 10, np.float64(3.2031730817384574))
-    #(100, 20, np.float64(1.99364723850543))
-    #(100, 50, np.float64(0.01067566400550203))
-    #(1000, 10, np.float64(3.3948032297143866))
-    #(1000, 20, np.float64(3.2031730817384574))
-    #(1000, 50, np.float64(1.8515305531317954))
-    #(10000, 10, np.float64(3.8019981684757713))
-    #(10000, 20, np.float64(2.1363319744909415))
-    #(10000, 50, np.float64(1.8910558431660756))
+    for problem_num in tqdm(range(8)):
+        data = np.load(f"../data/problem_{problem_num + 1}.npz")
 
-    #(100, np.float64(0.01067566400550203))
-    #(1000, np.float64(1.8515305531317954))
-    #(100, np.float64(1.8515305531317954))
-    #(1000, np.float64(0.01067566400550203))
-    #(100, np.float64(3.144850474346221))
-    #(1000, np.float64(1.962694021881409))
-    #(100, np.float64(3.144850474346221))
-    #(1000, np.float64(1.9393335184151785))
-    #(100, np.float64(0.01067566400550203))
-    #(1000, np.float64(2.0724984634723063))
-    #(100, np.float64(1.99364723850543))
-    #(1000, np.float64(1.8515305531317954))
-    #(100, np.float64(1.8515305531317954))
-    #(1000, np.float64(0.01067566400550203))
-    #(100, np.float64(1.8515305531317954))
-    #(1000, np.float64(0.01067566400550203))
-    #(100, np.float64(1.9393335184151785))
-    #(1000, np.float64(0.01067566400550203))
-    #(100, np.float64(1.8515305531317954))
-    #(1000, np.float64(1.8515305531317954))
+        x: np.ndarray = data['x']
+        y: np.ndarray = data['y']
 
-    # Weighted parent selection tuning results
+        results: list[(Node, TrainingParameters)] = []
 
-    #('not weighted', np.float64(1.8515305531317954))
-    #('weighted', np.float64(1.962694021881409))
-    #('not weighted', np.float64(1.9393335184151785))
-    #('weighted', np.float64(1.99364723850543))
-    #('not weighted', np.float64(1.962694021881409))
-    #('weighted', np.float64(1.99364723850543))
-    #('not weighted', np.float64(1.8515305531317954))
-    #('weighted', np.float64(1.8515305531317954))
-    #('not weighted', np.float64(1.8515305531317954))
-    #('weighted', np.float64(2.0724984634723063))
-    #('not weighted', np.float64(1.99364723850543))
-    #('weighted', np.float64(2.847476468494588))
-    #('not weighted', np.float64(1.8515305531317954))
-    #('weighted', np.float64(1.8515305531317954))
-    #('not weighted', np.float64(1.8515305531317954))
-    #('weighted', np.float64(1.8515305531317954))
-    #('not weighted', np.float64(1.9393335184151785))
-    #('weighted', np.float64(1.962694021881409))
-    #('not weighted', np.float64(1.8515305531317954))
-    #('weighted', np.float64(1.8515305531317954))
+        for weighted_parent_selection in [False, True]:
+            for elitist_selection in [False, True]:
+                for random_event_chance in [0.0, 0.2, 0.5, 0.7, 1.0]:
+                    parameters = TrainingParameters(x, y, 100, 50, weighted_parent_selection, elitist_selection, random_event_chance)
 
-    results: list[tuple[str, float]] = []
+                    results.append((train_model(parameters), parameters))
 
-    for i in range(10):
-        solution_not_weighted: Node = train_model(TrainingParameters(x, y, 1000, 50))
-        solution_weighted: Node = train_model(TrainingParameters(x, y, 1000, 50, weighted_parent_selection=True))
+        solutions.append(sorted(results, key=lambda res: DagGP.mse(res[0], x, y))[0])
 
-        results.append(("not weighted", DagGP.mse(solution_not_weighted, x, y)))
-        results.append(("weighted", DagGP.mse(solution_weighted, x, y)))
+    for index, solution in enumerate(solutions):
+        print(f"Problem {index} \n")
+        print(f"Solution: {solution[0]}, MSE: {DagGP.mse(solution[0], solution[1].x, solution[1].y)}")
+        print(f"Training parameters: {solution[1]} \n\n")
 
-    for result in results:
-        print(result)
+
+
 
 
 if __name__ == '__main__':
