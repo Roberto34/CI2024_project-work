@@ -538,6 +538,17 @@ def main():
     # Weighted parent selection: False
     # Elitist population: False
     # Random event chance: 0.2
+    #
+    # Problem 2
+    #
+    # Solution: add(exp(x0), absolute(tan(add(sinh(x0), sinh(arcsinh(arctan(cos(remainder(sinh(x1), subtract(sinh(sinh(x0)), cos(tanh(x1)))))))))))), MSE: 29616782465260.66
+    #
+    # Training parameters:
+    #  Num. generations: 1000
+    # Population size: 50
+    # Weighted parent selection: False
+    # Elitist population: True
+    # Random event chance: 0.0
 
     # Problem 5
 
