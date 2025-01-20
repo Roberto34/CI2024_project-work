@@ -5,7 +5,6 @@ import numpy as np
 
 from tqdm import tqdm
 from gxgp import Node, DagGP, gxgp_random
-from src.gxgp import arity
 
 
 class TrainingParameters:
