@@ -5,7 +5,7 @@ import numpy as np
 
 from tqdm import tqdm
 from gxgp import Node, DagGP, gxgp_random
-import s332177
+from src.gxgp import arity
 
 
 class TrainingParameters:
@@ -507,7 +507,6 @@ def main():
     # (10000, 10, np.float64(3.8019981684757713))
     # (10000, 20, np.float64(2.1363319744909415))
     # (10000, 50, np.float64(1.8910558431660756))
-
 
 
     # (100, np.float64(0.01067566400550203))
